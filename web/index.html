@@ -1,0 +1,211 @@
+<html>
+<head>
+    <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<div id="font_measurement">
+</div>
+<div class="top_bar">
+    <div class="top_bar_button new_math_stack_button" onclick="createMathStack()">
+        +
+    </div>
+    <div class="math_stack_container">
+        <div class="math_stack_container_inner" id="msc">
+
+        </div>
+    </div>
+</div>
+<script>
+    const electron = require("electron");
+    let msc = document.getElementById("msc");
+    let font_measurement = document.getElementById("font_measurement");
+
+    const ExpressionDimensions = {
+        NUMBER: {padding: {x: 0.1, y: 0.1}}
+    }
+
+    class ExpressionBounds {
+        expression = null;
+
+        start_x = 0.0;
+        start_y = 0.0;
+        stop_x = 0.0;
+        stop_y = 0.0;
+        padding_x = 0.0;
+        padding_y = 0.0
+
+
+        constructor(expression, start_x, start_y, stop_x, stop_y, padding_x, padding_y) {
+            this.expression = expression;
+            this.start_x = start_x;
+            this.start_y = start_y;
+            this.stop_x = stop_x;
+            this.stop_y = stop_y;
+            this.padding_x = padding_x;
+            this.padding_y = padding_y;
+        }
+    }
+
+    class MathStack {
+        expression = null;
+        expression_bounds = [];
+
+        constructor(expression) {
+            this.expression = expression;
+        }
+
+        recalculate_bounds() {
+            let self = this;
+
+            let recursive_calculation = (expression, current_start_x, current_start_y, current_proportions) => {
+                let start_x;
+                let start_y;
+                let stop_x;
+                let stop_y;
+                let padding_x;
+                let padding_y;
+
+                if (expression.value.Number || expression.value.Variable) {
+                    let string = expression.value.Number ? expression.value.Number.toString() : expression.value.Variable;
+                    font_measurement.innerText = string;
+                    let width = font_measurement.clientWidth;
+                    let height = font_measurement.clientHeight;
+
+                    start_x = current_start_x;
+                    stop_x = current_start_x + width * current_proportions;
+                    start_y = current_start_y;
+                    stop_y = current_start_y + height * current_proportions;
+                    padding_x = ExpressionDimensions.NUMBER.padding.x;
+                    padding_y = ExpressionDimensions.NUMBER.padding.y;
+                }
+                else if (expression.value.Factor) {
+                    start_x = current_start_x;
+                    start_y = current_start_y;
+                    stop_y = start_y;
+
+                    let i_x = start_x;
+
+                    for (let i of expression.value.Factor) {
+                        let i_bounds = recursive_calculation(i, i_x, start_y, current_proportions);
+                        stop_x = i_bounds.stop_x;
+                        i_x = stop_x;
+                        stop_y = Math.max(stop_y, i_bounds.stop_y);
+                    }
+                    padding_x = 0;
+                    padding_y = 0;
+                }
+
+                let bounds = new ExpressionBounds(expression, start_x, start_y, stop_x, stop_y, padding_x, padding_y);
+                self.expression_bounds[expression.id] = bounds;
+                return bounds;
+            }
+
+            recursive_calculation(self.expression, 0, 0, 1);
+
+            this.normalize_bounds();
+        }
+
+        normalize_bounds() {
+            let min_x = 0;
+            let min_y = 0;
+            let max_x = 0;
+            let max_y = 0;
+
+            for (let bound of this.expression_bounds) {
+                min_x = Math.min(bound.start_x, min_x);
+                min_y = Math.min(bound.start_y, min_y);
+                max_x = Math.max(bound.stop_x, max_x);
+                max_y = Math.max(bound.stop_y, max_y);
+            }
+
+            let total_size_x = max_x - min_x;
+            let total_size_y = max_y - min_y;
+            let scale = 1 / Math.max(total_size_x, total_size_y);
+
+            for (let bound of this.expression_bounds) {
+                // Offset everything to 0, 0
+                bound.start_x -= min_x;
+                bound.start_y -= min_y;
+                bound.stop_x -= min_x;
+                bound.stop_y -= min_y;
+
+                // Make everything go from 0 to 1
+                bound.start_x *= scale;
+                bound.start_y *= scale;
+                bound.stop_x *= scale;
+                bound.stop_y *= scale;
+                bound.padding_x *= scale;
+                bound.padding_y *= scale;
+            }
+        }
+    }
+
+    let math_stacks = []
+    let canvases = []
+
+    function render_math_stack(id) {
+        let canvas = canvases[id];
+        let ctx = canvas.getContext("2d");
+        let width = canvas.getBoundingClientRect().width;
+        let height = canvas.getBoundingClientRect().height;
+
+        canvas.setAttribute("width", width);
+        canvas.setAttribute("height", height);
+
+        let scale = Math.min(width, height);
+
+        for (let bound of math_stacks[id].expression_bounds) {
+            let start_x = (bound.start_x + bound.padding_x) * scale;
+            let start_y = (bound.start_y + bound.padding_y) * scale;
+            let stop_x = (bound.stop_x - bound.padding_x) * scale;
+            let stop_y = (bound.stop_y - bound.padding_y) * scale;
+
+            if (bound.expression.value.Variable) {
+                let font_size = Math.min(stop_x - start_x, stop_y - start_y);
+
+                ctx.font = font_size + "px Verdana";
+
+                ctx.fillText(bound.expression.value.Variable, start_x, start_y + height / 2);
+            }
+        }
+    }
+
+    async function createMathStack() {
+        let id = msc.children.length;
+
+        let ms = new MathStack(await electron.ipcRenderer.invoke("create_new_math_stack"));
+        ms.recalculate_bounds();
+        math_stacks.push(ms);
+
+        let math_stack = document.createElement("div");
+        math_stack.className = "math_stack";
+        math_stack.id = "math_stack" + id;
+
+        let canvas = document.createElement("canvas");
+        canvas.id = "math_stack_canvas" + id;
+        canvas.style.width = "100%";
+        canvas.style.height = "100%";
+
+        canvases.push(canvas);
+        math_stack.append(canvas);
+        msc.append(math_stack);
+
+        msc.style.width = Math.max(3, msc.children.length) * (100 / 3) + "%";
+        document.documentElement.style.setProperty("--math_stack_width", (100 / msc.children.length) + "%")
+
+        for (let i in math_stacks) {
+            render_math_stack(i);
+        }
+    }
+
+    // The default math stack
+    createMathStack();
+
+    window.onresize = () => {
+        for (let i in math_stacks) {
+            render_math_stack(i);
+        }
+    }
+</script>
+</body>
+</html>
